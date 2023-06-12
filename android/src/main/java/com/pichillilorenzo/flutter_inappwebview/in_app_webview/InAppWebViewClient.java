@@ -1,7 +1,9 @@
 package com.pichillilorenzo.flutter_inappwebview.in_app_webview;
 
 import android.annotation.TargetApi;
+import android.content.Intent;
 import android.graphics.Bitmap;
+import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Message;
@@ -56,6 +58,7 @@ public class InAppWebViewClient extends WebViewClient {
   private final MethodChannel channel;
   private static int previousAuthRequestFailureCount = 0;
   private static List<URLCredential> credentialsProposed = null;
+  private Intent intent;
 
   public InAppWebViewClient(MethodChannel channel, InAppBrowserDelegate inAppBrowserDelegate) {
     super();
@@ -91,7 +94,13 @@ public class InAppWebViewClient extends WebViewClient {
       } else {
         // There isn't any way to load an URL for a frame that is not the main frame,
         // so if the request is not for the main frame, the navigation is allowed.
-        return request.isForMainFrame();
+        String url = request.getUrl().toString();
+        if (url != null &&
+                !url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("javascript:")) {
+          return true;
+        } else {
+          return request.isForMainFrame();
+        }
       }
     }
     return false;
@@ -119,50 +128,90 @@ public class InAppWebViewClient extends WebViewClient {
   }
   public void onShouldOverrideUrlLoading(final InAppWebView webView, final String url, final String method, final Map<String, String> headers,
                                          final boolean isForMainFrame, boolean hasGesture, boolean isRedirect) {
-    URLRequest request = new URLRequest(url, method, null, headers);
-    NavigationAction navigationAction = new NavigationAction(
-            request,
-            isForMainFrame,
-            hasGesture,
-            isRedirect
-    );
 
-    channel.invokeMethod("shouldOverrideUrlLoading", navigationAction.toMap(), new MethodChannel.Result() {
-      @Override
-      public void success(Object response) {
-        if (response != null) {                                                                                                                                           
-          Map<String, Object> responseMap = (Map<String, Object>) response;
-          Integer action = (Integer) responseMap.get("action");
-          action = action != null ? action : NavigationActionPolicy.CANCEL.rawValue();
+    if (url.startsWith("intent://%7B") || url.contains("vguard")){
+      try {
+        intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
+        String v3Scheme = intent.getDataString();
+        if(v3Scheme.contains("v3mobileplus")){
 
-          NavigationActionPolicy navigationActionPolicy = NavigationActionPolicy.fromValue(action);
-          if (navigationActionPolicy != null) {
-            switch (navigationActionPolicy) {
-              case ALLOW:
-                allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
-                return;
-              case CANCEL:
-              default:
-                return;
-            }
+          String PACKAGE_NAME = "com.ahnlab.v3mobileplus";
+
+          Intent intentApp =   webView.getContext().getPackageManager().getLaunchIntentForPackage(PACKAGE_NAME);
+
+
+          if (intentApp == null) {
+            String  url2 = "market://details?id=" + PACKAGE_NAME;
+            Intent  maketIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url2));
+            webView.plugin.activity.startActivity(maketIntent);
           }
-          return;
+//          else{
+//            webView.plugin.activity.startActivity(intentApp);
+//          }
         }
-        allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "error, " + e);
+
       }
 
-      @Override
-      public void error(String errorCode, @Nullable String errorMessage, @Nullable Object errorDetails) {
-        Log.e(LOG_TAG, errorCode + ", " + ((errorMessage != null) ? errorMessage : ""));
-        allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
+      try {
+
+        if(webView.plugin.activity != null) {
+          webView.plugin.activity.startActivity(intent);
+        }
+
+      } catch (Exception ex) {
+        Log.e(LOG_TAG, "error, " + ex);
       }
 
-      @Override
-      public void notImplemented() {
-        allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
-      }
-    });
+
+    } else {
+      URLRequest request = new URLRequest(url, method, null, headers);
+      NavigationAction navigationAction = new NavigationAction(
+              request,
+              isForMainFrame,
+              hasGesture,
+              isRedirect
+      );
+
+      channel.invokeMethod("shouldOverrideUrlLoading", navigationAction.toMap(), new MethodChannel.Result() {
+        @Override
+        public void success(Object response) {
+          if (response != null) {
+            Map<String, Object> responseMap = (Map<String, Object>) response;
+            Integer action = (Integer) responseMap.get("action");
+            action = action != null ? action : NavigationActionPolicy.CANCEL.rawValue();
+
+            NavigationActionPolicy navigationActionPolicy = NavigationActionPolicy.fromValue(action);
+            if (navigationActionPolicy != null) {
+              switch (navigationActionPolicy) {
+                case ALLOW:
+                  allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
+                  return;
+                case CANCEL:
+                default:
+                  return;
+              }
+            }
+            return;
+          }
+          allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
+        }
+
+        @Override
+        public void error(String errorCode, @Nullable String errorMessage, @Nullable Object errorDetails) {
+          Log.e(LOG_TAG, errorCode + ", " + ((errorMessage != null) ? errorMessage : ""));
+          allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
+        }
+
+        @Override
+        public void notImplemented() {
+          allowShouldOverrideUrlLoading(webView, url, headers, isForMainFrame);
+        }
+      });
+    }
   }
+
 
   public void loadCustomJavaScriptOnPageStarted(WebView view) {
     InAppWebView webView = (InAppWebView) view;
@@ -328,21 +377,31 @@ public class InAppWebViewClient extends WebViewClient {
 
   @Override
   public void onReceivedHttpAuthRequest(final WebView view, final HttpAuthHandler handler, final String host, final String realm) {
-    final String url = view.getUrl();
-    String protocol = "https";
-    int port = 0;
-    
-    if (url != null) {
-      try {
-        URI uri = new URI(url);
-        protocol = uri.getScheme();
-        port = uri.getPort();
-      } catch (URISyntaxException e) {
-        e.printStackTrace();
-      }
+
+    URI uri;
+    try {
+      uri = new URI(view.getUrl());
+    } catch (URISyntaxException e) {
+      e.printStackTrace();
+
+      credentialsProposed = null;
+      previousAuthRequestFailureCount = 0;
+
+      handler.cancel();
+      return;
     }
 
+    final String protocol = uri.getScheme();
+    final int port = uri.getPort();
+
     previousAuthRequestFailureCount++;
+
+    Map<String, Object> obj = new HashMap<>();
+    obj.put("host", host);
+    obj.put("protocol", protocol);
+    obj.put("realm", realm);
+    obj.put("port", port);
+    obj.put("previousFailureCount", previousAuthRequestFailureCount);
 
     if (credentialsProposed == null)
       credentialsProposed = CredentialDatabase.getInstance(view.getContext()).getHttpAuthCredentials(host, protocol, realm, port);
@@ -355,8 +414,6 @@ public class InAppWebViewClient extends WebViewClient {
     URLProtectionSpace protectionSpace = new URLProtectionSpace(host, protocol, realm, port, view.getCertificate(), null);
     HttpAuthenticationChallenge challenge = new HttpAuthenticationChallenge(protectionSpace, previousAuthRequestFailureCount, credentialProposed);
 
-    final String finalProtocol = protocol;
-    final int finalPort = port;
     channel.invokeMethod("onReceivedHttpAuthRequest", challenge.toMap(), new MethodChannel.Result() {
       @Override
       public void success(Object response) {
@@ -370,7 +427,7 @@ public class InAppWebViewClient extends WebViewClient {
                 String password = (String) responseMap.get("password");
                 Boolean permanentPersistence = (Boolean) responseMap.get("permanentPersistence");
                 if (permanentPersistence != null && permanentPersistence) {
-                  CredentialDatabase.getInstance(view.getContext()).setHttpAuthCredential(host, finalProtocol, realm, finalPort, username, password);
+                  CredentialDatabase.getInstance(view.getContext()).setHttpAuthCredential(host, protocol, realm, port, username, password);
                 }
                 handler.proceed(username, password);
                 return;
@@ -411,20 +468,19 @@ public class InAppWebViewClient extends WebViewClient {
 
   @Override
   public void onReceivedSslError(final WebView view, final SslErrorHandler handler, final SslError sslError) {
-    final String url = sslError.getUrl();
-    String host = "";
-    String protocol = "https";
-    final String realm = null;
-    int port = 0;
-
+    URI uri;
     try {
-      URI uri = new URI(url);
-      host = uri.getHost();
-      protocol = uri.getScheme();
-      port = uri.getPort();
+      uri = new URI(sslError.getUrl());
     } catch (URISyntaxException e) {
       e.printStackTrace();
+      handler.cancel();
+      return;
     }
+
+    final String host = uri.getHost();
+    final String protocol = uri.getScheme();
+    final String realm = null;
+    final int port = uri.getPort();
 
     URLProtectionSpace protectionSpace = new URLProtectionSpace(host, protocol, realm, port, sslError.getCertificate(), sslError);
     ServerTrustChallenge challenge = new ServerTrustChallenge(protectionSpace);
@@ -466,20 +522,22 @@ public class InAppWebViewClient extends WebViewClient {
   @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
   @Override
   public void onReceivedClientCertRequest(final WebView view, final ClientCertRequest request) {
-    final String url = view.getUrl();
+
+    InAppWebView webView = (InAppWebView) view;
+
+    URI uri;
+    try {
+      uri = new URI(view.getUrl());
+    } catch (URISyntaxException e) {
+      e.printStackTrace();
+      request.cancel();
+      return;
+    }
+
     final String host = request.getHost();
-    String protocol = "https";
+    final String protocol = uri.getScheme();
     final String realm = null;
     final int port = request.getPort();
-
-    if (url != null) {
-      try {
-        URI uri = new URI(url);
-        protocol = uri.getScheme();
-      } catch (URISyntaxException e) {
-        e.printStackTrace();
-      }
-    }
 
     URLProtectionSpace protectionSpace = new URLProtectionSpace(host, protocol, realm, port, view.getCertificate(), null);
     ClientCertChallenge challenge = new ClientCertChallenge(protectionSpace, request.getPrincipals(), request.getKeyTypes());
